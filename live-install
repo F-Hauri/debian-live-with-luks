@@ -1,0 +1,385 @@
+#!/bin/bash
+# Creation of GNU/Linux Debian USB Live Stick with LUKS encrypted persistance
+###########################################################################
+##
+##   This program is free software: you can redistribute it and/or modify
+##   it under the terms of the GNU General Public License as published by
+##   the Free Software Foundation, either version 3 of the License, or
+##   (at your option) any later version.
+##
+##   This program is distributed in the hope that it will be useful,
+##   but WITHOUT ANY WARRANTY; without even the implied warranty of
+##   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+##   GNU General Public License for more details.
+##
+##   You should have received a copy of the GNU General Public License
+##   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+##
+###########################################################################
+#
+# WARNING: This script will overwrite all data present on your devices
+# Don't use this tools without having *strong* backup solution off ALL
+# your datas! Author may not be responsible of any problem due to the
+# use of this! You've been warned!
+#
+# (C) 2013 - 2014 F-Hauri.ch - Felix Hauri - mailto: live@f-hauri.ch
+#
+# Required: parted git cryptsetup live-helper
+# Suggest: pv
+#
+# CARE: live-helper may require a lot of free space (more than 7Gb)!
+
+export LI_VER='$Id: live-install,v 1.4 2014-03-19 17:37:51 felix Exp $'
+export DEBIAN_MIRROR=http://debian.ethz.ch/debian/
+export DEBIAN_SECURITY=http://security.debian.org/
+export SECRET=path/secretfile
+export IMAGE
+export STICK
+export MODEL
+export DIALOG=whiptail
+export TMPDIR=/tmp/live-build
+export LBREPO=/tmp/src-live-build
+export PV=$(which pv)
+[ "$PV" ] || PV=/bin/cat
+export PARTED=$(which parted)
+if [ ! -x "$PARTED" ] ;then
+    echo "This tool use GNU 'parted' tool."
+    echo "Please ensure they is installed and you have sufficient right!"
+    exit
+fi
+XARGS() { sed -ne '/#/d;s/ \t//g;H;${x;s/\n/ /g;s/^ //;p}'; }
+
+die() {
+    echo >&2 "$0 Error: $@"
+    exit 1;
+}
+abort() {
+    echo >&2 "$0: User abort."
+    exit 0;
+}
+syntax() {
+    echo "Syntax: $0 [-t] [-h] [-s path/secretfile] [-d sdX] [-n|-f path/binary.img]"
+    echo "   when '-t' switch is used, nothing will be done."
+    echo "   '-d device' STICK block device (only devname, no /dev/)"
+    echo "   '-s file'   path to secret file"
+    echo "   '-f file'   path to binary image (-n and -f are exclusive)"
+    echo "   '-n'        Create a new binary image"
+    echo "   '-h'        switch display this help."
+}
+test=false precmd=''
+while getopts 'thns:d:f:' opt ;do
+  case $opt in
+      t ) test=true precmd='echo';;
+      h ) syntax; abort ;;
+      d ) STICK=${OPTARG##*/} ; read MODEL </sys/block/$STICK/device/model ;;
+      f ) [ "$IMAGE" ] &&die "option -n and -f are exclusive";IMAGE="$OPTARG" ;;
+      n ) [ "$IMAGE" ] &&die "option -n and -f are exclusive";IMAGE=makeNew ;;
+      s ) SECRET="$OPTARG" ;;
+      * ) ;;
+  esac
+ done
+
+buildBinary() {
+    getRepo
+    $precmd mkdir -p $TMPDIR/lb-$$
+    $precmd cd $TMPDIR/lb-$$
+    $precmd mkdir -p config/chroot_local-packageslists chroot/lib/live/boot
+    Proxies=''
+    [ "$http_proxy" ] && Proxies+=" --apt-http-proxy $http_proxy"
+    [ "$ftp_proxy" ] && Proxies+=" --apt-ftp-proxy $ftp_proxy"
+    ExtraBootParams=$(XARGS <<-eobp
+	boot=live
+	config
+#       locales=de_CH
+	locales=fr_CH
+	keyboard-layouts=ch
+	keyboard-variant=fr
+	persistent=cryptsetup
+	persistence-encryption=luks
+	persistence
+	eobp
+	)
+    PackageList=$(XARGS <<-eopl
+	gnome
+	gnome-core
+	# gnome-full
+	# debian-forensics
+	debian-installer-launcher
+	eopl
+	)
+    Packages=$(XARGS <<-eopk
+	compiz-fusion-bcop
+	cryptsetup
+	debian-installer-launcher
+	firmware-linux-nonfree
+	firmware-linux-free
+	less
+	ssh
+	openvpn
+	xtightvncviewer
+	gnome
+	gnome-core
+	gsmartcontrol
+	smartmontools
+	partclone
+	ntfs-3g
+	task-french-desktop
+	task-gnome-desktop
+#	linux-image-486
+#	linux-image-686
+#	linux-image-3.2.0-4-486
+#	linux-image-2.6-486
+#	linux-image-3.2.0-4-686-pae
+#	linux-image-2.6-686-pae
+	smartmontools
+	user-setup
+	sudo
+	apt-utils
+	eopk
+	)
+    eval $precmd lb config $(XARGS <<-eocmd
+	--architectures i386
+	-b hdd --binary-filesystem fat32
+	--debian-installer true --debian-installer-gui true
+	--bootappend-live "$ExtraBootParams"
+	--mirror-binary $DEBIAN_MIRROR
+	--mirror-binary-security $DEBIAN_SECURITY
+	--archive-areas 'main contrib non-free'
+	$Proxies
+	eocmd
+	)
+    if $test;then 
+	echo printf "%s\n" \> config/package-lists/standard.list.chroot \
+	    $Packages $PackageList
+    else
+	printf "%s\n" > config/package-lists/standard.list.chroot \
+	    $Packages $PackageList
+    fi
+    $precmd cp -t config/packages.chroot/ \
+	$LBREPO/live-{boot{,-initramfs-tools,-doc},config{,-sysvinit,-doc}}_*deb
+    $precmd lb build
+    $precmd cd -
+}
+
+binFileChoose() {
+    BINFILES=($(/bin/ls -1t $TMPDIR/lb-*/binary.{,hybrid.iso,img} 2>/dev/null))
+    menu=()
+    for ((i=0;i<${#BINFILES[@]};i++)) ;do
+	menu+=($((1+i)) "$(date -r ${BINFILES[i]} +"%F %T"
+                           ) ${BINFILES[i]#$TMPDIR/}")
+    done
+    title="Choose image to install on $STICK ($MODEL)"
+    menu+=(N "New fresh live image")
+    num=$($DIALOG --menu "$title" 21 72 11 "${menu[@]}" 2>&1 >/dev/tty)
+    if [ ! "$num" ] ; then
+	echo "User aborted."
+	exit 0;
+    fi
+    if [ "$num" = "N" ] ;then
+	IMAGE=makeNew
+	return
+    fi
+    IMAGE=${BINFILES[num-1]}
+}
+
+usbKeyChoose() {
+    while [ ! -b /dev/$STICK ] ;do
+	USBKEYS=($(
+		grep -Hv ^ATA\ *$ /sys/block/*/device/vendor |
+		sed s/device.vendor:.*$/device\\/uevent/ |
+		xargs grep -H ^DRIVER=sd |
+		sed s/device.uevent.*$/size/ |
+		xargs grep -Hv ^0$ |
+		cut -d / -f 4
+		))
+	if [ ${#USBKEYS[@]} -eq 0 ];then
+	    title="No key found"
+	else
+	    title="Choose wich USB stick have to be installed"
+	fi
+	
+	menu=(R "Re scan devices")
+	for dev in ${USBKEYS[@]} ;do
+	    read model </sys/block/$dev/device/model
+	    menu+=($dev "$model")
+	done
+	num=$($DIALOG --menu "$title" 21 72 11 "${menu[@]}" 2>&1 >/dev/tty)
+	if [ ! "$num" ] ; then
+	    echo "User aborted."
+	    exit 0;
+	fi
+	[ ! "$num" = "R" ] && [ "${USBKEYS[num]}" ] && STICK=${USBKEYS[num]}
+    done
+    [ -b /dev/$STICK ] && read MODEL </sys/block/$STICK/device/model
+}
+getRepo() {
+# BOOT
+# Debian Wheezy's version of Live-build has some bug about LUKS, so there is
+# what I've done as work around.
+#
+    local oldpwd="$PWD" lb_obj
+    [ -f "$LBREPO/live-config/components/0160-sysvinit" ] && return
+    $precmd mkdir -p $LBREPO
+    $precmd cd $LBREPO
+    for lb_obj in build config boot;do
+	$precmd git clone git://live-systems.org/git/live-$lb_obj.git
+	if $test ;then
+	    echo patch live-config/components/0160-sysvinit
+	else
+	    [ "$lb_obj" = "config" ] && patch -p 0 < <(sed 's/^\t//' <<-eopatch
+	--- -	2013-08-01 08:47:45.125515775 +0200
+	+++ live-config/components/0160-sysvinit	2013-08-01 08:44:23.000000000 +0200
+	@@ -43,7 +43,7 @@
+	 	# Configure autologin
+	 	if [ "${LIVE_CONFIG_NOAUTOLOGIN}" != "true" ] && [ "${LIVE_CONFIG_NOTTYAUTOLOGIN}" != "true" ]
+	 	then
+	-		sed -i -e "s|^\([^:]*:[^:]*:[^:]*\):.*getty.*\<\(tty[0-9]*\).*$|\1:/bin/login -f ${LIVE_USERNAME} </dev/\2 >/dev/\2 2>\&1|" /etc/inittab
+	+		sed -i -e "s|^\([^#:]*:[^:]*:[^:]*\):.*getty.*\<\(tty[0-9]*\).*$|# &\n\1:/bin/login -f ${LIVE_USERNAME} </dev/\2 >/dev/\2 2>\&1|" /etc/inittab
+	 
+	 		init q
+	 	fi
+	eopatch
+	    )
+	fi
+	$precmd cd live-$lb_obj
+	$precmd dpkg-buildpackage -b -uc -us
+	cd ..
+    done
+    cd "$oldpwd"
+}
+human() {
+    local _c=$1 _i=0 _a=(b K M G T P)
+    while [ ${#_c} -gt 3 ] ;do
+        ((_i++))
+        _c=$((_c>>10))
+      done
+    _c=000$(( ( $1*1000 ) >> ( 10*_i ) ))
+    ((_i+=${3:-0}))
+    printf ${2+-v} $2 "%.2f%s" \
+	${_c:0:${#_c}-3}.${_c:${#_c}-3} ${_a[_i]}
+}
+
+[ -b "/dev/$STICK" ] || usbKeyChoose
+[ "$IMAGE" = "makeNew" ] || [ -f "$IMAGE" ] || binFileChoose
+
+# Preamble: build binary if needed
+
+if [ "$IMAGE" = "makeNew" ] ;then
+    buildBinary
+    BINFILES=($(/bin/ls -1t $TMPDIR/lb-*/binary.{,hybrid.iso,img} 2>/dev/null))
+    IMAGE=$BINFILES
+fi
+
+[ -f "$IMAGE" ] || exit 0
+[ -b "/dev/$STICK" ] || exit 0
+
+# Main begin here: printout
+
+USBSIZE=$(/sbin/blockdev --getsize64 /dev/$STICK)
+human $USBSIZE husbsize
+IMGSIZE=$(stat -c %s "$IMAGE")
+human $IMGSIZE himgsize
+
+if [ $USBSIZE -lt $IMGSIZE ] ;then
+    echo "Image don't fit on Stick ($himgsize > $husbsize)"
+    exit 1
+fi
+
+# Umount if needed
+
+xargs --no-run-if-empty $precmd umount < <(
+    tac <(awk < /proc/mounts /^\\/dev\\/$STICK/{print\ \$2}) )
+$precmd sync
+$precmd sleep .3
+
+# Write image
+
+echo "Writting $IMAGE ($himgsize) on $STICK (${MODEL}:$husbsize)"
+
+START=($(</proc/uptime))
+if $test;then
+    echo $PV $IMAGE \>/dev/$STICK
+else
+    $PV $IMAGE >/dev/$STICK
+fi
+echo "Syncing..."
+$precmd sync
+END=($(</proc/uptime))
+if $test;then
+    ELAPSED=1
+else
+    ELAPSED=$((${END//.}-${START//.}))
+fi
+RATE=$((IMGSIZE*100/ELAPSED))
+human $RATE hrate
+helap=${ELAPSED:0:${#ELAPSED}-2}.${ELAPSED:${#ELAPSED}-2}
+
+echo "Writted $himgsize in $helap secs at => $hrate/s\n"
+
+# Verify writed image
+
+mnt=$(mktemp -d /tmp/lb2sd_XXXXX)
+$precmd mount /dev/${STICK}1 $mnt
+$precmd cd $mnt
+if $test;then
+    echo $'md5sum -c < md5sum.txt &&\necho Verification done, all checksums ok.'
+else
+    md5sum -c < md5sum.txt &&
+    echo Verification done, all checksums ok.
+fi
+$precmd cd - >/dev/null
+$precmd umount $mnt
+
+$precmd sync
+$precmd sleep .7
+
+# Adding second partition 
+
+$precmd parted -s /dev/$STICK $(
+    parted /dev/$STICK print |
+    sed -ne '
+        /^Disk/{
+            s/^.*: //;
+            h
+        };
+        /^\s*1\s.*primary.*boot/{
+            s/^.*\s\([0-9]*MB\)\s\+[0-9]*MB\s\+primary.*boot.*$/mkpart primary ext3 \1/;
+            G;
+            s/\n/ /;
+            p
+        }
+    '
+)
+
+$precmd sleep .5
+
+# Creating Ext4 FS under LUKS Crypto---
+
+if $test;then
+    echo "cryptsetup -q luksFormat /dev/${STICK}2 < $SECRET &&"
+    echo "cryptsetup -q luksOpen /dev/${STICK}2 ${mnt##*/} < $SECRET &&"
+    echo mkfs.ext4 -L persistence /dev/mapper/${mnt##*/} &&
+    echo mount /dev/mapper/${mnt##*/} /mnt &&
+    echo "echo '/ union' >/mnt/persistence.conf"
+    echo sync
+    echo umount /dev/mapper/${mnt##*/} 
+    echo cryptsetup luksClose ${mnt##*/}
+else
+    cryptsetup -q luksFormat /dev/${STICK}2 < $SECRET &&
+    cryptsetup -q luksOpen /dev/${STICK}2 ${mnt##*/} < $SECRET &&
+    mkfs.ext4 -L persistence /dev/mapper/${mnt##*/} &&
+    mount /dev/mapper/${mnt##*/} $mnt &&
+    echo '/ union' >$mnt/persistence.conf
+    sync
+    umount /dev/mapper/${mnt##*/} 
+    cryptsetup luksClose ${mnt##*/}
+fi
+
+if $test ;then
+    echo rmdir $mnt
+    rmdir $mnt
+else
+    rmdir $mnt
+fi
+
+$precmd echo All done.
