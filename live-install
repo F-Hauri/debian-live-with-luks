@@ -29,7 +29,7 @@
 #
 # CARE: live-helper may require a lot of free space (more than 7Gb)!
 
-export LI_VER='$Id: live-install,v 1.4 2014-03-19 17:37:51 felix Exp $'
+export LI_VER='$Id: live-install,v 1.5 2014-04-02 14:13:39 felix Exp $'
 export DEBIAN_MIRROR=http://debian.ethz.ch/debian/
 export DEBIAN_SECURITY=http://security.debian.org/
 export SECRET=path/secretfile
@@ -78,6 +78,21 @@ while getopts 'thns:d:f:' opt ;do
       * ) ;;
   esac
  done
+txtsize() {
+    local _c=$1 _d=$1 _i=0 _j=0 _a=(b K M G T P)
+    while [ ${#_c} -gt 3 ] ;do
+        ((_i++ ))
+        ((_c>>= 10 ))
+      done
+    _c=000$(( ( $1*1000 ) >> ( 10*_i ) ))
+    while [ ${#_d} -gt 3 ] ;do
+        ((_j++ ))
+        ((_d/= 1000 ))
+      done
+    _d=000$(( ( $1*1000 ) / 10**(3*_j) ))
+    printf ${2+-v} $2 "%.2f%s %.2f%s" ${_d:0:${#_d}-3}.${_d:${#_d}-3} \
+        ${_a[_j]} ${_c:0:${#_c}-3}.${_c:${#_c}-3} ${_a[_i]}
+}
 
 buildBinary() {
     getRepo
@@ -201,14 +216,17 @@ usbKeyChoose() {
 	menu=(R "Re scan devices")
 	for dev in ${USBKEYS[@]} ;do
 	    read model </sys/block/$dev/device/model
-	    menu+=($dev "$model")
+            read size </sys/block/$dev/size
+            txtsize $size*512 size
+            printf -v desc "%8s (%8s) %s" $size "$model"
+            menu+=($dev "$desc")
 	done
 	num=$($DIALOG --menu "$title" 21 72 11 "${menu[@]}" 2>&1 >/dev/tty)
 	if [ ! "$num" ] ; then
 	    echo "User aborted."
 	    exit 0;
 	fi
-	[ ! "$num" = "R" ] && [ "${USBKEYS[num]}" ] && STICK=${USBKEYS[num]}
+	[ "$num" ] && [ ! "$num" = "R" ] && STICK=$num
     done
     [ -b /dev/$STICK ] && read MODEL </sys/block/$STICK/device/model
 }
