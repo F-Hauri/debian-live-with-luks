@@ -1,3 +1,13 @@
+# Debian Live with encrypted *persistence* partition
+
+Copying:
+--------
+
+As bash, this stuff is licensed under GNU GPL v3.0 or later.
+
+Introduction:
+-------------
+
 This is a bash script intended to be run under Debian GNU/Linux
 
 Requirement: live-helper parted git cryptsetup
